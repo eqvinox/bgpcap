@@ -1,0 +1,514 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vim: et:ts=2:sw=2
+  -->
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude" category="exp" docName="draft-equinox-opsawg-pcap-streams" ipr="trust200902" obsoletes="" submissionType="IETF" consensus="true" xml:lang="en" version="3">
+  <front>
+    <title abbrev="opsawg-pcap-streams">PCAP(ng) Link type for reassembled streams</title>
+    <seriesInfo name="Internet-Draft" value="draft-equinox-opsawg-pcap-streams"/>
+    <author fullname="David 'equinox' Lamparter" initials="D" surname="Lamparter">
+      <organization>NetDEF, Inc.</organization>
+      <address>
+        <postal>
+          <city>San Jose</city>
+          <country>USA</country>
+        </postal>
+        <email>equinox@diac24.net</email>
+        <email>equinox@opensourcerouting.org</email>
+      </address>
+    </author>
+    <date year="2025"/>
+    <area>Internet</area>
+    <workgroup>Network Working Group</workgroup>
+    <keyword>pcap</keyword>
+    <keyword>pcapng</keyword>
+    <keyword>streams</keyword>
+    <keyword>SOCK_STREAM</keyword>
+    <keyword>TCP</keyword>
+    <keyword>TLS</keyword>
+    <keyword>serial</keyword>
+    <keyword>BGP</keyword>
+    <keyword>LDP</keyword>
+    <abstract>
+      <t>
+        <cref>
+          This draft lives at <eref target="https://github.com/eqvinox/opsawg-pcap-streams"/>
+        </cref>
+      </t>
+      <t>
+          When working with network packet captures, it can be beneficial to
+          reassemble higher-layer protocol data units or streams and store the
+          result of reassembly for further processing (e.g. replaying).  In
+          comparison to existing PCAP link types, this can involve either just
+          moving the boundary up the protocol stack, letting packet
+          boundaries be driven by the upper layer, or both.
+      </t>
+    </abstract>
+  </front>
+  <middle>
+    <section>
+      <name>Introduction</name>
+      <t>
+          Existing PCAP DLTs cover a wide range of technologies and protocols,
+          and in some cases even distinct capture methods and metadata of the
+          same.  However, the existing types are mostly focused around the
+          lower or lowest layers of the stack -- normally, this is desired
+          since this gives a full picture of events and captures at higher
+          layers may miss crucial information for tracing and debugging
+          issues.
+      </t>
+      <t>
+          However, there are situations where this additional data can be
+          detrimental since it complicates further processing of captured data,
+          since functions (in particular retransmits, reassembly, error
+          correction and encryption) of the lower layers must be reproduced
+          before other actions.
+      </t>
+      <t>
+          This document suggests two PCAP DLTs for roughly what is the
+          interface of SOCK_STREAM sockets.  The two DLTs are distinct in
+          where packet boundaries are drawn.
+      </t>
+    </section>
+    <section>
+      <name>Requirements Language</name>
+      <t>
+          The key words "MUST", "MUST NOT", "REQUIRED", "SHALL",
+          "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT
+          RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be
+          interpreted as described in BCP 14 <xref target="RFC2119"/>
+          <xref target="RFC8174"/> when, and only when, they appear in
+          all capitals, as shown here.
+      </t>
+    </section>
+
+    <section anchor="lower_packet">
+      <name>DLT for Lower-layer delivery units</name>
+      <t>
+          PCAP data using this DLT contains data from a socket as it becomes
+          available to the socket consumer.  This can be applied to most
+          socket interfaces (or even anything file-descriptor-like), but is
+          primarily intended for:
+      </t>
+      <ul>
+        <li>
+            TCP (or other SOCK_STREAM or SOCK_SEQPACKET) contents, as if
+            delivered (or submited) on the boundary between the network socket
+            stack and an user
+        </li>
+        <li>
+            TLS payloads after decryption (or before encryption), as if on the
+            boundary between a TLS implementation and its user
+        </li>
+        <li>
+            single streams of QUIC (or other multi-stream carriers, e.g. SCTP),
+            as their behavior is similar to stream sockets.
+        </li>
+        <li>
+            SSH channel data on its unencrypted side
+        </li>
+      </ul>
+      <t>
+          It is not primarily intended for, but its use might be extended to:
+      </t>
+      <ul>
+        <li>
+            UDP (or other SOCK_DGRAM) contents
+        </li>
+        <li>
+            captures on an operating system's concept of file descriptors
+        </li>
+      </ul>
+      <t>
+          In all cases, the following behavior and requirements apply:
+      </t>
+      <ul>
+        <li>
+            all data MUST be in order as seen by the upper layer, in particular
+            when ordering and handling out-of-order arrival is performed by the
+            lower layer
+        </li>
+        <li>
+            there MUST NOT be retransmissions or other duplication of data that
+            would not be seen by the upper layer
+        </li>
+        <li>
+            if the lower layer reassembles or reconstructs data, this MUST also
+            have been applied to the data.  Note that in some cases, it is not
+            defined where boundaries between steps of data delivery are drawn,
+            e.g. a TCP socket might deliver two smaller segments in one read
+            operation, or in the other extreme might deliver a byte at a time.
+            If captured from the actual delivery interface, captures MUST
+            reflect units as delivered, but if reconstructed from lower-layer
+            data they SHOULD (and can only) reflect assumed reasonable
+            behavior.
+        </li>
+        <li>
+            cryptographic operations MUST reflect the capture layer boundary,
+            e.g. a capture above a TLS implementations boundary would only
+            contain unencrypted data while a capture of the same data exchange
+            below the TLS implementation boundary would only contain encrypted
+            data.
+        </li>
+      </ul>
+      <section anchor="dltl_lower_ts">
+        <name>Timestamp behavior</name>
+        <t>
+            Handling of timestamps in this DLT is (contrasted against the
+            next DLT) trivial; all packets in a PCAP capture MUST contain the
+            time of its carried data becoming available to or being submitted
+            from the upper layer.
+        </t>
+        <t>
+            Note that (especially when generating this PCAP data from
+            lower-layer PCAP input) reordered data may be required to be
+            held back if a prior data is outstanding.  The timestamp and packet
+            order MUST reflect availability to the upper layer, it MUST NOT be
+            the earlier arrival time of the raced-ahead data.  The PCAP data
+            MAY contain multiple packets with the same timestamp in this case.
+        </t>
+      </section>
+    </section>
+
+    <section anchor="upper_packet">
+      <name>DLT for Upper-layer protocol units</name>
+      <t>
+          Many (but not all) consumers of the interfaces referenced here apply
+          their own packetization, segmentation or other logical subdivision
+          of data.  The actual content is the same as with the previous DLT
+          in this document, but the PCAP packet boundaries are now drawn
+          according to the behavior of the consumer.  Applicability of this
+          DLT is given by combining the rough applicability of the previous
+          DLT with a known upper layer protocol that performs its own unit
+          subdivision.  Usage examples are:
+      </t>
+      <ul>
+        <li>
+            BGP sessions, packetized to individual messages
+        </li>
+        <li>
+            LDP sessions, as above
+        </li>
+        <li>
+            the lower-layer interface of TLS or SSH, i.e. individual records
+            with their encrypted contents
+        </li>
+      </ul>
+      <t>
+          The following behavior is expected of PCAP data of this DLT:
+      </t>
+      <ul>
+        <li>
+            each PCAP packet MUST contain exactly one upper-layer data unit
+            in its entirety.  If multiple data units are seen concatenated
+            in a single transmit action, receive action, or network packet,
+            they MUST be split before being encoded with this DLT.
+        </li>
+        <li>
+            ordering MUST be retained as seen/performed by the upper layer
+            protocol, which also matches handover by/to the lower layer.
+        </li>
+        <li>
+            if the upper-layer protocol can handle data larger than PCAP(ng)'s
+            32-bit block length imposes, it is impossible to encode the data
+            with this DLT and this MUST be treated as an error condition.
+        </li>
+        <li>
+            this DLT MUST NOT be used if either the upper layer protocol is
+            not known or has no well-defined data unit boundary
+        </li>
+        <li>
+            the capture MUST NOT contain partial or truncated packets even at
+            the beginning or end of the capture.  If the capture is ended with
+            a partial last unit, that unit MUST NOT be written to a capture
+            using this DLT.  If a capture starts partway into a stream, this
+            DLT MUST NOT be used if unit boundaries cannot be restored with
+            a reasonable level of confidence.
+        </li>
+      </ul>
+      <t>
+          Note that this behavior also makes this DLT unusable for interactions
+          that intentionally break upper layer framing, e.g. fuzzers.  It is
+          also unsuitable for handling corrupted data (unless the corruption
+          happens above the upper protocol data unit level).
+      </t>
+
+      <section anchor="dltu_lower_ts">
+        <name>Timestamp behavior</name>
+        <t>
+            While determining the timestamp value for captures of an upper
+            layer's transmit actions is easy, all other applicable cases can
+            involve some fuzziness as partial upper layer units may be seen
+            with different timestamps but need to be reassembled before
+            outputting into a PCAP capture.
+        </t>
+        <t>
+            In these cases, the capture SHOULD represent the timestamp of
+            complete availability of the protocol data unit, i.e. the last
+            byte.  If this is impractical or unhelpful for a given use cases,
+            it MAY alternatively represent the timestamp of first data of the
+            unit.  The timestamp MUST NOT contain any other values, neither if
+            seen on some intermediate packet nor if determined algorithmically.
+        </t>
+      </section>
+    </section>
+
+    <section anchor="specific">
+      <name>Usage edge conditions</name>
+
+      <section anchor="duplex">
+        <name>Duplex and substream behavior</name>
+        <t>
+            Packets in a PCAP using the DLTs defined in this document carry
+            purely unidirectional of one data stream.  The receive and transmit
+            parts of bidirectional protocols are split into two captures, as are
+            the flows of protocols supporting multiple channels (e.g. QUIC and
+            SCTP).
+        </t>
+        <t>
+            These DLTs are intended for use with the PCAPng format, which can
+            carry and distinguish data from multiple capture interfaces.  In this
+            case, the distinct streams MAY be carried as multiple "interfaces"
+            in the same file, each with its own Interface Description Block.
+            TBD defines options to correlate these streams with each other.
+        </t>
+        <t>
+            A PCAPng file MAY contain a subset of related streams, e.g. only
+            one direction of a TCP stream, or only some substreams of a
+            multiplexed QUIC connection.  This is entirely valid as an encoding
+            and useful in some cases but in others may make the capture file
+            useless.  This is a context-dependent consideration beyond the
+            scope of this document.
+        </t>
+      </section>
+
+      <section anchor="partial">
+        <name>Partial stream behavior</name>
+        <t>
+            Both DLTs described in this document can interact with partial
+            data streams starting or ending at some arbitrary point.  As
+            already noted for the upper layer DLT, incomplete units must be
+            omitted there.  For both DLTs, completeness at either end of a
+            stream MAY optionally be indicated with the options described in
+            TBD.
+        </t>
+      </section>
+
+      <section anchor="missing">
+        <name>Missing data and packet loss</name>
+        <t>
+            Both DLT described here MUST NOT be used to encode captures with
+            missing data midway through a stream. If missing data is
+            encountered, it MAY be treated as the end of a first stream
+            (possibly with a truncated and omitted last unit) and the start of
+            a second stream (possibly with a partial and omitted first unit).
+            In general, neither DLT here is really suited for such situations.
+        </t>
+      </section>
+    </section>
+
+    <section anchor="sources">
+      <name>Sourcing and synthetic data</name>
+      <t>
+          In the best case, data written out to PCAP with these DLTs is
+          sourced at the actual corresponding interface points, e.g. I/O
+          operations or message interfaces.  However, these DLTs are also
+          applicable (and possibly even more relevant) for processing of
+          previous lower-layer captures (maybe also in PCAP format) and may
+          be generated from them by analysis tooling.
+      </t>
+      <t>
+          For any data encoded with these DLTs that involves tooling not
+          normally part of the data path, the tooling generally needs to
+          reasonably match behavior of systems that are actually in the data
+          path (e.g. reassembly of duplicate or overlapping data).  If details
+          of this behavior are relevant to analysis, these DLTs are again not
+          suitable and should not be used.
+      </t>
+    </section>
+
+    <section anchor="encoding">
+      <name>Encoding</name>
+      <t>
+          The DLTs described in this document are applicable to PCAP and PCAPng
+          data and are used according to standard behavior for the respective
+          format.
+      </t>
+      <t>
+          It is valid, though somewhat ambiguous, to use these DLTs without
+          any of the additional context provided by the options defined in
+          this section.  Some tooling
+        <cref>*cough* Wireshark *cough* (not sure if this can be mentioned)</cref> 
+          is already capable of processing data with arbitrary DLTs, and in
+          conjunction with manually defining interpretation of this DLT can
+          be quite useful already.  Nevertheless, the options defined below 
+          SHOULD be added if they are applicable and their values known.
+      </t>
+      <section anchor="per_if">
+        <name>Per-stream (Interface Description Block) options</name>
+
+        <table>
+          <thead>
+            <tr><th>Name></th><th>Code</th><th>Length</th><th>Multiple allowed</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>if_stream_assoc</td>
+              <td>TBD</td>
+              <td>4</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_start_timestamp</td>
+              <td>TBD</td>
+              <td>8</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_start_complete</td>
+              <td>TBD</td>
+              <td>1</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_end_timestamp</td>
+              <td>TBD</td>
+              <td>8</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_end_complete</td>
+              <td>TBD</td>
+              <td>1</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_lower_header</td>
+              <td>TBD</td>
+              <td>variable</td>
+              <td>no</td>
+            </tr>
+            <tr>
+              <td>if_stream_upper_protocol</td>
+              <td>TBD</td>
+              <td>variable</td>
+              <td>yes</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <dl>
+          <dt>if_stream_assoc</dt>
+          <dd>
+              index of another interface in this PCAPng file that is another
+              substream or direction of this stream
+          </dd>
+
+          <dt>if_stream_start_timestamp, if_stream_end_timestamp</dt>
+          <dd>
+              Timestamps of connection establishment or teardown, if known.
+              MUST NOT be used when capture starts or ends midway through.
+          </dd>
+
+          <dt>if_stream_start_complete, if_stream_end_timestamp</dt>
+          <dd>
+              Indication that start or end of stream is covered.
+          </dd>
+
+          <dt>if_stream_lower_header</dt>
+          <dd>
+              DLT of a lower layer protocol, and truncated lower layer headers
+              of the first packet of this stream according to that DLT.  (E.g.
+              LINKTYPE_ETHERNET + Ethernet, IPv6 and TCP headers - allows both
+              association with some upper layer protocol by port number or some
+              such, and also possibly reconstruction of packets.)
+          </dd>
+
+          <dt>if_stream_upper_protocol</dt>
+          <dd>
+              Some hint for decoding contents especially if
+              if_stream_lower_header is not possible.
+          </dd>
+        </dl>
+
+        <section anchor="if_stream_lower_header">
+          <name>Lower header option</name>
+          <t>TBD</t>
+          <t>2 bytes DLT, 2 bytes reserved, 4 bytes length, payload?</t>
+        </section>
+
+        <section anchor="if_stream_upper_protocol">
+          <name>Upper protocol hint option</name>
+          <t>TBD</t>
+          <t>some bytes "origin identifier" (e.g.: it's a TCP port number,
+            UDP port number, TLS ALPN identifier, SSH channel type/subsystem
+            name) + then actual value for that?</t>
+        </section>
+      </section>
+
+      <section anchor="per_pkt">
+        <name>Per-packet (Enhanced Packet Block) options</name>
+
+        <table>
+          <thead>
+            <tr><th>Name></th><th>Code</th><th>Length</th><th>Multiple allowed</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>epb_stream_first_timestamp</td>
+              <td>TBD</td>
+              <td>8</td>
+              <td>no</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <dl>
+          <dt>epb_stream_first_timestamp</dt>
+          <dd>
+              for upper-layer DLT, timestamp of first fragment containing
+              some of the data.  For lower-layer DLT, timestamp of actual
+              arrival if held due to reordering.
+          </dd>
+        </dl>
+      </section>
+    </section>
+
+    <section anchor="Security">
+      <name>Security Considerations</name>
+      <t>
+        <em>TBD</em>
+      </t>
+    </section>
+    <section anchor="privacy">
+      <name>Privacy Considerations</name>
+      <t>
+        <em>TBD</em>
+      </t>
+    </section>
+    <section anchor="IANA">
+      <name>IANA Considerations</name>
+      <t>
+          Requests allocation of 2 PCAP DLT values. (TBD)
+      </t>
+    </section>
+  </middle>
+  <back>
+    <references>
+      <name>References</name>
+      <references>
+        <name>Normative References</name>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.2119.xml"/>
+        <xi:include href="https://bib.ietf.org/public/rfc/bibxml/reference.RFC.8174.xml"/>
+      </references>
+      <references>
+        <name>Informative References</name>
+      </references>
+    </references>
+    <section anchor="ack" numbered="false">
+      <name>Acknowledgements</name>
+      <t>
+        <em>TBD, FILL IN</em>
+      </t>
+    </section>
+  </back>
+</rfc>
