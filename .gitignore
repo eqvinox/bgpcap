@@ -1,4 +1,3 @@
-*.pcapng
 *.o
 
 pcapngsplit
